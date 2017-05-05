@@ -18,48 +18,42 @@ const MANIFEST_TITLE: &'static str = ".4220_file_list.txt";
 const BUFFER_SIZE: usize = 2048;
 
 fn server(mut stream: TcpStream) -> io::Result<()> {
-    let mut b = [b' '; BUFFER_SIZE];
-    stream.read(&mut b)?;
-    let s = String::from_utf8_lossy(&b);
-    let mut tokens = s.splitn(3, " ");
-    let command = tokens.nth(0);
-    let file = tokens.nth(0).map(|b| Path::new(b.trim()));
-    let body = tokens.nth(0);
-    //println!("command: `{:?}`", command);
-    //let fn_error_msg = String::from("ERROR: expected a filename");
-    let response: Cow<str> = match command {
-        Some("contents") => Cow::Owned(contents()?),
-        Some("query") => match file {
-            Some(filename) => Cow::Owned(query(filename)?.to_string()),
-            None => Cow::Borrowed("ERROR: try `query <filename>`")
-        },
-        Some("get") => match file {
-            Some(filename) => Cow::Owned(get(filename)?),
-            None => Cow::Borrowed("ERROR: try `get <filename>`")
-        },
-        //Some("get_") => file.map_or_else(|f| get(f)?, || fn_error_msg),
-        Some("put") => match (file,body) {
-            (Some(f),Some(b)) => {
-                put(f, b)?; 
-                Cow::Borrowed("uh thanks (TODO)")
+    let mut b: [u8; BUFFER_SIZE];
+    loop {
+        b = [0; BUFFER_SIZE];
+        let len = stream.read(&mut b)?;
+        if len == 0 {
+            return Ok(())
+        }
+        let s = String::from_utf8_lossy(&b[..len]);
+        println!("GOT: `{}`", s);
+        let mut tokens = s.trim().splitn(3, " ");
+        let command = tokens.nth(0);
+        let file = tokens.nth(0).map(|b| Path::new(b.trim()));
+        let body = tokens.nth(0);
+        let response: Cow<str> = match command {
+            Some("contents") => Cow::Owned(contents()?),
+            Some("query") => match file {
+                Some(filename) => Cow::Owned(query(filename)?.to_string()),
+                None => Cow::Borrowed("ERROR: try `query <filename>`")
             },
-            (Some(_),None) => Cow::Borrowed("ERROR: missing `body`"),
-            (None,Some(_)) => Cow::Borrowed("ERROR: missing `filename`"),
-            _ => Cow::Borrowed("ERROR: try `put <filename> <body>`"),
-        },
-        _ => Cow::Borrowed("ERROR: try command contents|query|get|put"),
-    };
-    //println!("Responding `{}`", response);
-    stream.write_all(response.as_bytes())?;
-
-    println!("foo");
-    let mut b = [b' '; BUFFER_SIZE];
-    stream.read(&mut b)?;
-    //let mut t = String::new();
-    //stream.read_to_string(&mut t)?;
-    println!("AFTERWARDS got `{}`", b.len());
-
-    Ok(())
+            Some("get") => match file {
+                Some(filename) => Cow::Owned(get(filename)?),
+                None => Cow::Borrowed("ERROR: try `get <filename>`")
+            },
+            Some("put") => match (file,body) {
+                (Some(f),Some(b)) => {
+                    put(f, b)?; 
+                    Cow::Borrowed("uh thanks (TODO)")
+                },
+                (Some(_),None) => Cow::Borrowed("ERROR: missing `body`"),
+                (None,Some(_)) => Cow::Borrowed("ERROR: missing `filename`"),
+                _ => Cow::Borrowed("ERROR: try `put <filename> <body>`"),
+            },
+            _ => Cow::Borrowed("ERROR: try command contents|query|get|put"),
+        };
+        stream.write(response.as_bytes())?;
+    }
 }
 
 fn build_file_path(p: &Path) -> io::Result<PathBuf> {
@@ -132,26 +126,30 @@ fn parse_contents(contents: &str) -> Option<HashMap<String,u64>> {
 fn client(mut stream: TcpStream) -> io::Result<()> {
     // compare client's folder with server's
     // if there are any files differet/missing, remedy that
-    let mut s = String::new();
     stream.write(b"contents")?;
-    stream.read_to_string(&mut s)?;
+
+    let mut b = [0u8; BUFFER_SIZE];
+    let len = stream.read(&mut b)?;
+    let s = String::from_utf8_lossy(&b[..len]);
+
     let server_contents = parse_contents(&s)
         .ok_or(io::Error::new(io::ErrorKind::Other, "bad server contents"))?;
     let local_contents = get(Path::new(MANIFEST_TITLE))?;
     let client_contents = parse_contents(&local_contents)
         .ok_or(io::Error::new(io::ErrorKind::Other, "bad client contents"))?;
-    println!("Server contents: {:?}", server_contents);
-    println!("Client contents: {:?}", client_contents);
+
     for (name,cli_hash) in &client_contents {
+        let mut b = [0u8; BUFFER_SIZE];
         let path = Path::new(name);
         match server_contents.get(name) {
             Some(srv_hash) if srv_hash != cli_hash => {
                 // server has a different copy of this file
-                println!("query");
                 let cmd = format!("query {}", name);
                 stream.write(cmd.as_bytes())?;
-                s.clear();
-                stream.read_to_string(&mut s)?;
+
+                let len = stream.read(&mut b)?;
+                let s = String::from_utf8_lossy(&b[..len]);
+                
                 // compare timestamps
                 let srv_ts: u64 = s.parse().unwrap();
                 let cli_ts: u64 = query(path)?;
@@ -190,7 +188,6 @@ fn main() {
         // spawn listener
         let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
         for stream in listener.incoming() {
-            //server(stream.expect("Found invalid stream")).unwrap();
             thread::spawn(|| {
                 server(stream.expect("Found invalid stream")).unwrap()
             });
