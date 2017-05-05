@@ -12,31 +12,17 @@ use std::collections::hash_map::DefaultHasher;
 // TODO (?): use rust temp dir?
 const FOLDER_NAME: &'static str = "tmp_contents";
 const MANIFEST_TITLE: &'static str = ".4220_file_list.txt";
+const BUFFER_SIZE: usize = 2048;
 
-fn handle_client(mut stream: TcpStream) -> io::Result<()> {
-    //let mut s = String::new();
-    //stream.read_to_string(&mut s)?;
-    let mut b = [b' ';32];
-    //let mut b = Vec::with_capacity(32);
-    //stream.read_exact(&mut b)?;
+fn server(mut stream: TcpStream) -> io::Result<()> {
+    let mut b = [b' '; BUFFER_SIZE];
     stream.read(&mut b)?;
-    //stream.read(&mut b)?;
-    //println!("{}", b.len());
-    //let s = String::from_utf8(b).expect("Bad utf");
-    let s = String::from_utf8_lossy(&b).to_owned();
-    //println!("{}", s.len());
-    //println!("`{}`", s);
-    //println!("Received: `{}`", s);
-    
-    // case sensitivity?
-    //match s.splitn(1, " ").nth(0).map(|t| t.to_lowercase()) {
+    let s = String::from_utf8_lossy(&b);
     let mut tokens = s.splitn(3, " ");
-    let tokall: Vec<_> = tokens.clone().collect();
-    println!("{:?}", tokall);
     let command = tokens.nth(0);
     let file = tokens.nth(0).map(|b| Path::new(b.trim()));
     let body = tokens.nth(0);
-    println!("command: `{:?}`", command);
+    //println!("command: `{:?}`", command);
     //let fn_error_msg = String::from("ERROR: expected a filename");
     let response: String = match command {
         Some("contents") => contents()?,
@@ -57,7 +43,7 @@ fn handle_client(mut stream: TcpStream) -> io::Result<()> {
         },
         _ => "ERROR: try command contents|query|get|put".to_string()
     };
-    println!("Responding `{}`", response);
+    //println!("Responding `{}`", response);
     stream.write_all(response.as_bytes())?;
     Ok(())
 }
@@ -78,7 +64,6 @@ fn contents() -> io::Result<String> {
 }
 
 fn query(filename: &Path) -> io::Result<SystemTime> {
-//fn query(filename: &str) -> io::Result<SystemTime> {
     let path = build_file_path(filename)?;
     let f = File::open(path)?;
     let md = f.metadata()?;
@@ -86,7 +71,6 @@ fn query(filename: &Path) -> io::Result<SystemTime> {
 }
 
 fn get(filename: &Path) -> io::Result<String> {
-//fn get(filename: &str) -> io::Result<String> {
     let path = build_file_path(filename)?;
     let mut f = File::open(path)?;
     let mut s = String::new();
@@ -111,25 +95,57 @@ fn hash(filename: &Path) -> io::Result<u64> {
     Ok(s.finish())
 }
 
+fn parse_contents(contents: &str) -> Option<Vec<(u64,&str)>> {
+    let mut v = vec![];
+    for line in contents.trim().split('\n') {
+        let mut parts = line.splitn(2, "    ");
+        let h = parts.nth(0);
+        let f = parts.nth(0);
+        if let (Some(hash),Some(name)) = (h, f) {
+            let h: u64 = match hash.parse() {
+                Ok(h) => h,
+                Err(_) => return None,
+            };
+            v.push((h, name));
+        } else {
+            return None;
+        }
+    }
+    Some(v)
+}
 
+fn client(mut stream: TcpStream) -> io::Result<()> {
+    let mut s = String::new();
+    stream.write("contents".as_bytes())?;
+    stream.read_to_string(&mut s)?;
+    let server_contents = parse_contents(&s)
+        .ok_or(io::Error::new(io::ErrorKind::Other, "bad server contents"))?;
+    let local_contents = contents()?;
+    let client_contents = parse_contents(&local_contents)
+        .ok_or(io::Error::new(io::ErrorKind::Other, "bad client contents"))?;
+
+
+
+
+    Ok(())
+}
 
 fn main() {
     let mode = env::args().nth(1).expect("USAGE: ./sync client|server");
 
     if mode == "server" {
         let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-        //let _ = stream.write(&[1]);
-        //let _ = stream.read(&mut [0; 128]); 
         for stream in listener.incoming() {
-            handle_client(stream.expect("Found invalid stream")).unwrap();
+            server(stream.expect("Found invalid stream")).unwrap();
         }
     } else if mode == "client" {
-        let mut stream = TcpStream::connect("127.0.0.1:8080").unwrap();
+        let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
+        client(stream).unwrap();
         //stream.write("contents".as_bytes()).unwrap();
-        stream.write("get foo.txt".as_bytes()).unwrap();
-        let mut s = String::new();
-        stream.read_to_string(&mut s).unwrap();
-        println!("`{}`", s);
+        //stream.write("get foo.txt".as_bytes()).unwrap();
+        //let mut s = String::new();
+        //stream.read_to_string(&mut s).unwrap();
+        //println!("`{}`", s);
     } else {
         panic!("Invalid mode string; it must be `client` or `server`");
     }
