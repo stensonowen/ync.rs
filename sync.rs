@@ -5,10 +5,8 @@ use std::io::{self, Read, Write};
 use std::path::{PathBuf, Path};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-//use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, hash_map};
-use std::borrow::Cow;
-
+//use std::borrow::Cow;
 
 // TODO (?): use rust temp dir?
 const FOLDER_NAME: &'static str = "tmp_contents";
@@ -23,39 +21,39 @@ fn server(mut stream: TcpStream) -> io::Result<()> {
         if len == 0 {
             return Ok(())
         }
-        let s = String::from_utf8_lossy(&b[..len]);
-        println!("GOT: `{}`", s);
-        let mut tokens = s.trim().splitn(3, " ");
+        let mut tokens = b[..len].splitn(3, |i| *i==b' ');
         let command = tokens.nth(0);
-        let file = tokens.nth(0).map(|f| f.trim());
-        let path = file.map(|b| Path::new(b.trim()));
+        let file = tokens.nth(0);//.map(|f| f.trim());
+        let path_s = file.map(|b| String::from_utf8_lossy(b));
+        let path = path_s.map(|s| PathBuf::from(s.into_owned()));
         let body = tokens.nth(0);
-        let response: Cow<str> = match command {
-            Some("contents") => Cow::Owned(contents()?),
-            Some("query") => match path {
-                Some(filename) => Cow::Owned(query(filename)?.to_string()),
-                None => Cow::Borrowed("ERROR: try `query <filename>`")
+        let response: Vec<u8> = match command {
+            Some(b"contents") => contents()?,
+            Some(b"query") => match path {
+                Some(filename) => query(&filename)?.to_string().as_bytes().to_vec(),
+                None => "ERROR: try `query <filename>`".as_bytes().to_vec()
             },
-            Some("get") => match path {
-                Some(filename) => Cow::Owned(get(filename)?),
-                None => Cow::Borrowed("ERROR: try `get <filename>`")
+            Some(b"get") => match path {
+                Some(filename) => get(&filename)?,
+                None => "ERROR: try `get <filename>`".as_bytes().to_vec()
             },
-            Some("put") => match (file,body) {
+            Some(b"put") => match (file,body) {
                 (Some(f),Some(b)) => {
                     let mut srv_contents = get_local_contents()?;
-                    let new_hash = hash_str(b);
-                    srv_contents.insert(f.to_string(), new_hash); 
+                    let new_hash = hash_bytes(b);
+                    let filename = String::from_utf8_lossy(f).into_owned();
+                    put(Path::new(&filename), b)?; 
+                    srv_contents.insert(filename, new_hash); 
                     put_local_contents(srv_contents)?;
-                    put(Path::new(f), b)?; 
                     continue;
                 },
-                (Some(_),None) => Cow::Borrowed("ERROR: missing `body`"),
-                (None,Some(_)) => Cow::Borrowed("ERROR: missing `filename`"),
-                _ => Cow::Borrowed("ERROR: try `put <filename> <body>`"),
-            },
-            _ => Cow::Borrowed("ERROR: try command contents|query|get|put"),
+                (Some(_),None) => "ERROR: missing `body`".as_bytes(),
+                (None,Some(_)) => "ERROR: missing `filename`".as_bytes(),
+                _ => "ERROR: try `put <filename> <body>`".as_bytes(),
+            }.to_vec(),
+            _ => "ERROR: try command contents|query|get|put".as_bytes().to_vec(),
         };
-        stream.write(response.as_bytes())?;
+        stream.write(&response)?;
     }
 }
 
@@ -65,7 +63,7 @@ fn build_file_path(p: &Path) -> io::Result<PathBuf> {
     Ok(here)
 }
 
-fn contents() -> io::Result<String> {
+fn contents() -> io::Result<Vec<u8>> {
     get(Path::new(MANIFEST_TITLE))
 }
 
@@ -79,18 +77,21 @@ fn query(filename: &Path) -> io::Result<u64> {
     Ok(age.as_secs())
 }
 
-fn get(filename: &Path) -> io::Result<String> {
+fn get(filename: &Path) -> io::Result<Vec<u8>> {
     let path = build_file_path(filename)?;
     let mut f = File::open(path)?;
-    let mut s = String::new();
-    f.read_to_string(&mut s)?;
-    Ok(s)
+    //let mut s = String::new();
+    let mut v = Vec::new();
+    //f.read_to_string(&mut s)?;
+    f.read_to_end(&mut v)?;
+    Ok(v)
 }
 
-fn put(filename: &Path, contents: &str) -> io::Result<()> {
+fn put(filename: &Path, contents: &[u8]) -> io::Result<()> {
     let path = build_file_path(filename)?;
     let mut f = File::create(path)?;
-    f.write_all(contents.as_bytes())
+    //f.write_all(contents.as_bytes())
+    f.write_all(contents)
 }
 
  // TODO: this will be used once we start update .420_whatever.txt
@@ -105,7 +106,7 @@ fn hash(filename: &Path) -> io::Result<u64> {
     Ok(s.finish())
 }
 
-fn hash_str(text: &str) -> u64 {
+fn hash_bytes(text: &[u8]) -> u64 {
     let mut s = hash_map::DefaultHasher::new();
     text.hash(&mut s);
     s.finish()
@@ -191,17 +192,22 @@ fn client(mut stream: TcpStream) -> io::Result<()> {
                 println!("Server touched {} at {} and client at {}", name, srv_ts, cli_ts);
                 if cli_ts > srv_ts {
                     // client's version is newer
-                    let text = get(path)?;
-                    let cmd = format!("put {} {}", name, text);
-                    stream.write(cmd.as_bytes())?;
+                    let mut text = get(path)?;
+                    let mut prefix = b"put ".to_vec();
+                    let mut name_b = name.as_bytes().to_vec();
+                    let mut cmd = vec![];
+                    cmd.append(&mut prefix);
+                    cmd.append(&mut name_b);
+                    cmd.push(b' ');
+                    cmd.append(&mut text);
+                    stream.write(&cmd)?;
                 } else {
                     // client's version is older
                     let cmd = format!("get {}", name);
                     stream.write(cmd.as_bytes())?;
                     let mut b = [0u8; BUFFER_SIZE];
                     let len = stream.read(&mut b)?;
-                    let s = String::from_utf8_lossy(&b[..len]);
-                    put(Path::new(name), s.as_ref())?;
+                    put(Path::new(name), &b[..len])?;
                 }
             },
             Some(_) => {
@@ -210,9 +216,15 @@ fn client(mut stream: TcpStream) -> io::Result<()> {
             None => {
                 println!("Server didn't have {} at all", name);
                 // server doesn't have this file at all
-                let text = get(path)?;
-                let cmd = format!("put {} {}", name, text);
-                stream.write(cmd.as_bytes())?;
+                let mut text = get(path)?;
+                let mut prefix = b"put ".to_vec();
+                let mut name_b = name.as_bytes().to_vec();
+                let mut cmd = vec![];
+                cmd.append(&mut prefix);
+                cmd.append(&mut name_b);
+                cmd.push(b' ');
+                cmd.append(&mut text);
+                stream.write(&cmd)?;
             },
         }
     }
