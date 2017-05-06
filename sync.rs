@@ -1,3 +1,9 @@
+/* Note that this implementation is slightly different from the spec
+ *  It doesn't generate a temp directory or use md5 for its hash
+ *  Both of these are simple with Rust using crates, 
+ *   but are absent from the standard library
+ *  In order to keep this brief, only the Rust stdlib is used
+ */
 
 use std::{env, time, thread};
 use std::net::{TcpListener, TcpStream};
@@ -6,9 +12,7 @@ use std::path::{PathBuf, Path};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::collections::{HashMap, hash_map};
-//use std::borrow::Cow;
 
-// TODO (?): use rust temp dir?
 const FOLDER_NAME: &'static str = "tmp_contents";
 const MANIFEST_TITLE: &'static str = ".4220_file_list.txt";
 const BUFFER_SIZE: usize = 2048;
@@ -81,9 +85,7 @@ fn query(filename: &Path) -> io::Result<u64> {
 fn get(filename: &Path) -> io::Result<Vec<u8>> {
     let path = build_file_path(filename)?;
     let mut f = File::open(path)?;
-    //let mut s = String::new();
     let mut v = Vec::new();
-    //f.read_to_string(&mut s)?;
     f.read_to_end(&mut v)?;
     Ok(v)
 }
@@ -91,16 +93,13 @@ fn get(filename: &Path) -> io::Result<Vec<u8>> {
 fn put(filename: &Path, contents: &[u8]) -> io::Result<()> {
     let path = build_file_path(filename)?;
     let mut f = File::create(path)?;
-    //f.write_all(contents.as_bytes())
     f.write_all(contents)
 }
 
- // TODO: this will be used once we start update .420_whatever.txt
 fn hash(filename: &Path) -> io::Result<u64> {
     // NOTE: this uses the hash algorithm used by rust's hashmap
     //  because it's the only hash algorithm in the Rust std lib
     // it would be trivial to use the md5 crate, but this requires no crates 
-    // todo fix? idk
     let text = get(filename)?;
     let mut s = hash_map::DefaultHasher::new();
     text.hash(&mut s);
