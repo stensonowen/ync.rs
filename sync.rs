@@ -12,6 +12,7 @@ use std::collections::{HashMap, hash_map};
 const FOLDER_NAME: &'static str = "tmp_contents";
 const MANIFEST_TITLE: &'static str = ".4220_file_list.txt";
 const BUFFER_SIZE: usize = 2048;
+const USAGE: &'static str = "USAGE: ./syncr client|server <port>";
 
 fn server(mut stream: TcpStream) -> io::Result<()> {
     let mut b: [u8; BUFFER_SIZE];
@@ -232,7 +233,9 @@ fn client(mut stream: TcpStream) -> io::Result<()> {
 }
 
 fn main() {
-    let mode = env::args().nth(1).expect("USAGE: ./sync client|server");
+    let mut args = env::args();
+    let mode = args.nth(1).expect(USAGE);
+    let port: u16 = args.nth(0).expect(USAGE).parse().expect(USAGE);
 
     if mode == "server" {
         // switch directory
@@ -240,16 +243,18 @@ fn main() {
         new_dir.push(FOLDER_NAME);
         env::set_current_dir(new_dir).unwrap();
         // spawn listener
-        let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
         for stream in listener.incoming() {
             thread::spawn(|| {
                 server(stream.expect("Found invalid stream")).unwrap()
             });
         }
     } else if mode == "client" {
-        let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         client(stream).unwrap();
     } else {
         panic!("Invalid mode string; it must be `client` or `server`");
     }
 }
+
+
