@@ -1,14 +1,12 @@
 
+use std::{env, time, thread};
 use std::net::{TcpListener, TcpStream};
 use std::io::{self, Read, Write};
-use std::env;
 use std::path::{PathBuf, Path};
-use std::fs::File;
-use std::time;
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::thread;
+//use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, hash_map};
 use std::borrow::Cow;
 
 
@@ -29,22 +27,27 @@ fn server(mut stream: TcpStream) -> io::Result<()> {
         println!("GOT: `{}`", s);
         let mut tokens = s.trim().splitn(3, " ");
         let command = tokens.nth(0);
-        let file = tokens.nth(0).map(|b| Path::new(b.trim()));
+        let file = tokens.nth(0).map(|f| f.trim());
+        let path = file.map(|b| Path::new(b.trim()));
         let body = tokens.nth(0);
         let response: Cow<str> = match command {
             Some("contents") => Cow::Owned(contents()?),
-            Some("query") => match file {
+            Some("query") => match path {
                 Some(filename) => Cow::Owned(query(filename)?.to_string()),
                 None => Cow::Borrowed("ERROR: try `query <filename>`")
             },
-            Some("get") => match file {
+            Some("get") => match path {
                 Some(filename) => Cow::Owned(get(filename)?),
                 None => Cow::Borrowed("ERROR: try `get <filename>`")
             },
             Some("put") => match (file,body) {
                 (Some(f),Some(b)) => {
-                    put(f, b)?; 
-                    Cow::Borrowed("uh thanks (TODO)")
+                    let mut srv_contents = get_local_contents()?;
+                    let new_hash = hash_str(b);
+                    srv_contents.insert(f.to_string(), new_hash); 
+                    put_local_contents(srv_contents)?;
+                    put(Path::new(f), b)?; 
+                    continue;
                 },
                 (Some(_),None) => Cow::Borrowed("ERROR: missing `body`"),
                 (None,Some(_)) => Cow::Borrowed("ERROR: missing `filename`"),
@@ -90,19 +93,53 @@ fn put(filename: &Path, contents: &str) -> io::Result<()> {
     f.write_all(contents.as_bytes())
 }
 
-/*
- * TODO: this will be used once we start update .420_whatever.txt
+ // TODO: this will be used once we start update .420_whatever.txt
 fn hash(filename: &Path) -> io::Result<u64> {
     // NOTE: this uses the hash algorithm used by rust's hashmap
     //  because it's the only hash algorithm in the Rust std lib
     // it would be trivial to use the md5 crate, but this requires no crates 
     // todo fix? idk
     let text = get(filename)?;
-    let mut s = DefaultHasher::new();
+    let mut s = hash_map::DefaultHasher::new();
     text.hash(&mut s);
     Ok(s.finish())
 }
-*/
+
+fn hash_str(text: &str) -> u64 {
+    let mut s = hash_map::DefaultHasher::new();
+    text.hash(&mut s);
+    s.finish()
+}
+    
+
+fn get_local_contents() -> io::Result<HashMap<String,u64>> {
+    let rd = fs::read_dir(".")?;
+    let mut contents = HashMap::new();
+    for file in rd {
+        let path = file?;
+        if path.path().is_file() {
+            let name = path.file_name();
+            let name_str = name.to_string_lossy().into_owned();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            let hash = hash(Path::new(&name))?;
+            contents.insert(name_str, hash);
+        }
+    }
+    Ok(contents)
+}
+
+fn put_local_contents(c: HashMap<String,u64>) -> io::Result<()> {
+    let mut s = String::new();
+    for (name,hash) in c {
+        let f = format!("{h:>0w$}    {file}\n", h=hash, w=21, file=name);
+        s.push_str(&f);
+    }
+    let mut f = File::create(Path::new(MANIFEST_TITLE))?;
+    f.write_all(s.as_bytes())?;
+    Ok(())
+}
 
 fn parse_contents(contents: &str) -> Option<HashMap<String,u64>> {
     let mut v = HashMap::new();
@@ -132,11 +169,9 @@ fn client(mut stream: TcpStream) -> io::Result<()> {
     let len = stream.read(&mut b)?;
     let s = String::from_utf8_lossy(&b[..len]);
 
+    let client_contents = get_local_contents()?;
     let server_contents = parse_contents(&s)
         .ok_or(io::Error::new(io::ErrorKind::Other, "bad server contents"))?;
-    let local_contents = get(Path::new(MANIFEST_TITLE))?;
-    let client_contents = parse_contents(&local_contents)
-        .ok_or(io::Error::new(io::ErrorKind::Other, "bad client contents"))?;
 
     for (name,cli_hash) in &client_contents {
         let mut b = [0u8; BUFFER_SIZE];
@@ -159,6 +194,14 @@ fn client(mut stream: TcpStream) -> io::Result<()> {
                     let text = get(path)?;
                     let cmd = format!("put {} {}", name, text);
                     stream.write(cmd.as_bytes())?;
+                } else {
+                    // client's version is older
+                    let cmd = format!("get {}", name);
+                    stream.write(cmd.as_bytes())?;
+                    let mut b = [0u8; BUFFER_SIZE];
+                    let len = stream.read(&mut b)?;
+                    let s = String::from_utf8_lossy(&b[..len]);
+                    put(Path::new(name), s.as_ref())?;
                 }
             },
             Some(_) => {
@@ -173,7 +216,6 @@ fn client(mut stream: TcpStream) -> io::Result<()> {
             },
         }
     }
-
     Ok(())
 }
 
